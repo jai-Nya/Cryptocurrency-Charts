@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from time import sleep
 import pandas as pd
-from pybit.unified_trading import HTTP, WebSocket
+from pybit.unified_trading import HTTP
 from keys import api, secret
 import sys
 import matplotlib.pyplot as plt
@@ -12,7 +12,6 @@ import threading
 import requests
 import traceback
 
-# Initialize the session
 session = HTTP(api_key=api, api_secret=secret)
 
 global timeframe
@@ -27,95 +26,20 @@ class TextRedirector:
 
     def write(self, message):
         self.text_widget.insert(tk.END, message)
-        self.text_widget.yview(tk.END)  # Auto-scroll to the bottom
+        self.text_widget.yview(tk.END)
 
     def flush(self):
-        pass  # No need to implement for our purposes
-
-
-class WebSocketManager:
-    def __init__(self):
-        self.ws = None
-        self.last_price = None
-        self.initial_price_received = False
-
-    def handle_websocket_message(self, message):
-        """Handles incoming WebSocket messages."""
-        try:
-            # Check if the message is a dictionary with 'data' key
-            if isinstance(message, dict) and 'data' in message:
-                data = message['data']
-                # Ensure data is a non-empty list
-                if isinstance(data, list) and len(data) > 0:
-                    data_point = data[0]
-                    # Verify that 'markPrice' and 'symbol' are present
-                    if 'markPrice' in data_point and 'symbol' in data_point:
-                        price = float(data_point['markPrice'])
-                        symbol = data_point['symbol']
-                        if symbol == symbol_var.get():
-                            self.last_price = price
-                            if not self.initial_price_received:
-                                self.initial_price_received = True
-                                root.after(0, self.update_price_display)
-                    else:
-                        print(f"Data point missing 'markPrice' or 'symbol': {data_point}")
-                else:
-                    # Empty 'data' list, typically normal, so we can ignore it
-                    pass  # Do nothing
-            else:
-                # Message does not contain 'data', can log or ignore
-                pass  # Do nothing
-        except Exception as e:
-            print(f"Error handling WebSocket message: {e}")
-            traceback.print_exc()
-            print(f"Message content that caused the error: {message}")
-
-
-    def setup_websocket(self):
-        """Sets up the WebSocket connection."""
-        try:
-            if self.ws:
-                self.ws.exit()
-                sleep(1)  # Wait for old connection to close
-
-            self.ws = WebSocket(
-                testnet=False,
-                channel_type="linear"
-            )
-
-            symbol = symbol_var.get()
-            self.ws.ticker_stream(
-                symbol=symbol,
-                callback=self.handle_websocket_message
-            )
-            print(f"WebSocket connected for {symbol}")
-            self.initial_price_received = False  # Reset flag when connection is reset
-        except Exception as e:
-            print(f"Error setting up WebSocket: {e}")
-
-    def update_price_display(self):
-        """Updates the price label on the UI."""
-        if self.last_price is not None:
-            try:
-                symbol = symbol_var.get()
-                price_precision, _ = get_precisions(symbol)
-                formatted_price = f"{self.last_price:.{price_precision}f}"
-                price_label.config(text=f"Current Price: {formatted_price}")
-            except Exception as e:
-                print(f"Error updating price display: {e}")
-
-    def cleanup(self):
-        """Cleans up the WebSocket connection."""
-        if self.ws:
-            self.ws.exit()
-
+        pass
 
 def get_precisions(symbol):
     """Fetches price and quantity precisions for a symbol."""
     try:
         resp = session.get_instruments_info(category='linear', symbol=symbol)['result']['list'][0]
         price_filter = resp['priceFilter']['tickSize']
-        price_precision = len(price_filter.split('.')[1]) if '.' in price_filter else 0
+        if '.' in price_filter:
+            price_precision = len(price_filter.split('.')[1].rstrip('0'))
+        else:
+            price_precision = 0
         return price_precision, 0
     except Exception as err:
         print(f"Error fetching precisions: {err}")
@@ -220,7 +144,7 @@ def update_chart():
 
     threading.Thread(target=fetch_and_update).start()
 
-    root.after(5000, update_chart)  # Update every 5 seconds
+    root.after(5000, update_chart)
 
 def draw_chart(ohlc_data):
     """Updates the chart visuals safely on the main thread."""
@@ -228,7 +152,7 @@ def draw_chart(ohlc_data):
     ax2.clear()
 
     mpf.plot(
-        ohlc_data.tail(50),  # Limit to last 50 candles
+        ohlc_data.tail(50),
         type='candle',
         ax=ax1,
         style='charles',
@@ -237,10 +161,25 @@ def draw_chart(ohlc_data):
 
     canvas.draw()
 
+def fetch_current_price():
+    """Fetches current price and updates the price label."""
+    try:
+        symbol = symbol_var.get()
+        resp = session.get_tickers(category='linear', symbol=symbol)
+        if 'result' in resp and 'list' in resp['result']:
+            price = float(resp['result']['list'][0]['markPrice'])
+            price_precision, _ = get_precisions(symbol)
+            formatted_price = f"{price:.{price_precision}f}"
+            price_label.config(text=f"Current Price: {formatted_price}")
+    except Exception as e:
+        print(f"Error fetching current price: {e}")
+
+    # Schedule the next call
+    root.after(1000, fetch_current_price)
+
 def on_symbol_change(event):
     """Handles symbol change events."""
-    update_leverage_slider()  # Reset leverage slider for new symbol
-    ws_manager.setup_websocket()  # Reset WebSocket connection for new symbol
+    update_leverage_slider()
 
 def update_leverage(new_leverage):
     """Updates the global leverage variable."""
@@ -271,18 +210,27 @@ def get_max_leverage(symbol):
 
 def main():
     try:
-        global root, ax1, ax2, canvas, symbol_var, leverage_slider, price_label, ws_manager
+        global root, ax1, ax2, canvas, symbol_var, leverage_slider, price_label
         root = tk.Tk()
         root.title("Trading Bot")
         root.geometry("1200x800")
         root.state('zoomed')
 
-        # Initialize WebSocket manager
-        ws_manager = WebSocketManager()
+        # Center frame for chart
+        center_frame = tk.Frame(root)
+        center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # Right frame for controls
         right_frame = tk.Frame(root)
         right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
+
+        # Price frame
+        price_frame = tk.Frame(root)
+        price_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
+
+        # Price label in price_frame
+        price_label = tk.Label(price_frame, text="", font=("Arial", 14))
+        price_label.pack(pady=10)
 
         # Leverage slider frame
         leverage_frame = tk.Frame(right_frame)
@@ -293,12 +241,12 @@ def main():
 
         leverage_slider = tk.Scale(
             leverage_frame,
-            from_=1, to=50,  # Default range, will update dynamically
+            from_=1, to=50,
             orient=tk.HORIZONTAL,
             length=200,
             command=update_leverage
         )
-        leverage_slider.set(leverage)  # Set the default value
+        leverage_slider.set(leverage)
         leverage_slider.pack()
 
         # Timeframe selection frame
@@ -332,10 +280,6 @@ def main():
         balance_label = tk.Label(right_frame, text=f"Balance: {get_balance()} USDT", font=("Arial", 14))
         balance_label.pack(pady=10)
 
-        # Add price label
-        price_label = tk.Label(right_frame, text="Current Price: Loading...", font=("Arial", 14))
-        price_label.pack(pady=10)
-
         symbols = get_symbols()
         symbol_var = tk.StringVar(value=symbols[0])
         symbol_dropdown = ttk.Combobox(
@@ -363,28 +307,23 @@ def main():
         )
         short_button.pack(pady=5)
 
-        # Center frame for chart
-        center_frame = tk.Frame(root)
-        center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
-
         fig, (ax1, ax2) = plt.subplots(
             2, 1, figsize=(10, 8),
             gridspec_kw={'height_ratios': [3, 1]}
         )
         canvas = FigureCanvasTkAgg(fig, master=center_frame)
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
+
         terminal = tk.Text(center_frame, height=10, wrap=tk.WORD, font=("Courier", 10))
         terminal.pack(fill=tk.BOTH, expand=True, pady=10)
         sys.stdout = TextRedirector(terminal)
 
         # Initial setup
-        update_leverage_slider()  # Set leverage slider for the default symbol
-        update_chart()  # Initial chart update
-        ws_manager.setup_websocket()
+        update_leverage_slider()
+        update_chart()
+        fetch_current_price()
 
         def on_closing():
-            ws_manager.cleanup()
             root.destroy()
 
         root.protocol("WM_DELETE_WINDOW", on_closing)
